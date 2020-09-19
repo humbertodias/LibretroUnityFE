@@ -29,6 +29,8 @@ using System.Runtime.ExceptionServices;
 using System.Runtime.InteropServices;
 using System.Security;
 
+using UnityEngine;
+
 namespace SK.Libretro
 {
     public partial class Wrapper
@@ -206,15 +208,24 @@ namespace SK.Libretro
         }
 
         // GLFW
-        [DllImport("glfw3")] static extern IntPtr glfwGetProcAddress(string procname);
-        [DllImport("glfw3")] static extern bool glfwInit();
-        [DllImport("glfw3")] static extern void glfwTerminate();
-        [DllImport("glfw3")] static extern IntPtr glfwCreateWindow(int width, int height, string title, IntPtr monitor, IntPtr share);
-        [DllImport("glfw3")] static extern void glfwDestroyWindow(IntPtr window);
-        [DllImport("glfw3")] static extern void glfwMakeContextCurrent(IntPtr window);
-        [DllImport("glfw3")] static extern bool glfwWindowShouldClose(IntPtr window);
-        [DllImport("glfw3")] static extern void glfwPollEvents();
-        [DllImport("glfw3")] static extern void glfwSwapBuffers(IntPtr window);
+#if UNITY_EDITOR_LINUX || UNITY_STANDALONE_LINUX
+		public const string GLFW_DLL = "libglfw";
+#else
+		public const string GLFW_DLL = "glfw3";
+#endif
+        [DllImport(GLFW_DLL)] static extern IntPtr glfwGetProcAddress(string procname);
+        [DllImport(GLFW_DLL)] static extern bool glfwInit();
+        [DllImport(GLFW_DLL)] static extern void glfwTerminate();
+        [DllImport(GLFW_DLL)] static extern IntPtr glfwCreateWindow(int width, int height, string title, IntPtr monitor, IntPtr share);
+        [DllImport(GLFW_DLL)] static extern void glfwDestroyWindow(IntPtr window);
+        [DllImport(GLFW_DLL)] static extern void glfwMakeContextCurrent(IntPtr window);
+        [DllImport(GLFW_DLL)] static extern bool glfwWindowShouldClose(IntPtr window);
+        [DllImport(GLFW_DLL)] static extern void glfwPollEvents();
+        [DllImport(GLFW_DLL)] static extern void glfwSwapBuffers(IntPtr window);
+        [DllImport(GLFW_DLL)] static extern bool glfwVertex2f(float x, float y);
+        [DllImport(GLFW_DLL)] static extern bool glfwClear(int flags);
+        [DllImport(GLFW_DLL)] static extern bool glfwBegin(int flags);
+        [DllImport(GLFW_DLL)] static extern bool glfwEnd();
 
         //TODO(Tom): Make this work and move code to somewhere else when (if ever...) working
 
@@ -238,6 +249,8 @@ namespace SK.Libretro
         const uint GL_COLOR_BUFFER_BIT                          = 0x00004000;
         const uint GL_DEPTH_BUFFER_BIT                          = 0x00000100;
 
+        const uint GL_TRIANGLES                          = 0x0004;
+
         unsafe delegate void glGenFramebuffers_f(int n, uint* ids);
         delegate void glBindFramebuffer_f(uint target, uint framebuffer);
         unsafe delegate void glGenTextures_f(uint n, uint* textures);
@@ -250,6 +263,9 @@ namespace SK.Libretro
         delegate void glFramebufferRenderbuffer_f(uint target, uint attachment, uint renderbuffertarget, uint renderbuffer);
         delegate uint glCheckFramebufferStatus_f(uint target);
         delegate void glClear_f(uint flags);
+        delegate uint glVertex2f_f(float x,float y);
+        delegate uint glBegin_f(uint flags);
+        delegate uint glEnd_f();
 
         glGenFramebuffers_f glGenFramebuffers;
         glBindFramebuffer_f glBindFramebuffer;
@@ -263,6 +279,9 @@ namespace SK.Libretro
         glFramebufferRenderbuffer_f glFramebufferRenderbuffer;
         glCheckFramebufferStatus_f glCheckFramebufferStatus;
         glClear_f glClear;
+		glVertex2f_f glVertex2f;
+		glBegin_f glBegin;
+		glEnd_f glEnd;
 
         // My stuff...
         IntPtr GetProcAddress(string procname) => glfwGetProcAddress(procname);
@@ -307,6 +326,9 @@ namespace SK.Libretro
             glFramebufferRenderbuffer = Marshal.GetDelegateForFunctionPointer<glFramebufferRenderbuffer_f>(glfwGetProcAddress("glFramebufferRenderbuffer"));
             glCheckFramebufferStatus  = Marshal.GetDelegateForFunctionPointer<glCheckFramebufferStatus_f>(glfwGetProcAddress("glCheckFramebufferStatus"));
             glClear = Marshal.GetDelegateForFunctionPointer<glClear_f>(glfwGetProcAddress("glClear"));
+            glVertex2f = Marshal.GetDelegateForFunctionPointer<glVertex2f_f>(glfwGetProcAddress("glVertex2f"));
+            glBegin = Marshal.GetDelegateForFunctionPointer<glBegin_f>(glfwGetProcAddress("glBegin"));
+            glEnd = Marshal.GetDelegateForFunctionPointer<glEnd_f>(glfwGetProcAddress("glEnd"));
 
             fixed (uint* ptr = _framebuffers)
             {
@@ -333,7 +355,7 @@ namespace SK.Libretro
             glRenderbufferStorage(GL_RENDERBUFFER, GL_DEPTH_COMPONENT16, 640, 480);
             glBindRenderbuffer(GL_RENDERBUFFER, 0);
             glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, GL_RENDERBUFFER, _renderbuffers[0]);
-
+			
             uint status = glCheckFramebufferStatus(GL_FRAMEBUFFER);
             if (status != GL_FRAMEBUFFER_COMPLETE)
             {
@@ -352,6 +374,26 @@ namespace SK.Libretro
             _videoDriverGetCurrentFrameBufferCallback = VideoDriverGetCurrentFrameBuffer;
             _videoDriverGetProcAddressCallback = glfwGetProcAddress;
 
+
+    /* Loop until the user closes the window */
+    while (!glfwWindowShouldClose(_windowHandle))
+    {
+        /* Render here */
+        glClear(GL_COLOR_BUFFER_BIT);
+		glBegin(GL_TRIANGLES);
+		glVertex2f(-0.5f, -0.5f);
+		glVertex2f(0f, 0.5f);
+		glVertex2f(0.5f, -0.5f);
+		glEnd();
+
+        /* Swap front and back buffers */
+        glfwSwapBuffers(_windowHandle);
+
+        /* Poll for and process events */
+        glfwPollEvents();
+    }
+
+			
             _glSupport = true;
         }
     }
