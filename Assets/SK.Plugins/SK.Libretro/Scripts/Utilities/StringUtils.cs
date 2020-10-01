@@ -25,12 +25,12 @@ using System.Runtime.InteropServices;
 
 namespace SK.Libretro.Utilities
 {
-    public unsafe static class StringUtils
+    public static class StringUtils
     {
         public unsafe static IntPtr StringToChars(string src, out char* dst)
         {
             IntPtr srcPtr = Marshal.StringToHGlobalAnsi(src);
-            dst = (char*)srcPtr.ToPointer();
+            dst           = (char*)srcPtr.ToPointer();
             return srcPtr;
         }
 

@@ -20,32 +20,35 @@
  * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
  * SOFTWARE. */
 
+using System;
+using System.Runtime.InteropServices;
+
 namespace SK.Libretro
 {
-    public sealed class LibretroAudio
+    public class LibretroPlugin
     {
-        public IAudioProcessor Processor { get; internal set; }
-
-        private const float AUDIO_GAIN = 1f;
-
-        internal void SampleCallback(short left, short right)
+        [StructLayout(LayoutKind.Sequential)]
+        public struct InteropInterface
         {
-            if (Processor != null)
-            {
-                float[] floatBuffer = Utilities.AudioConversion.ConvertShortToFloat(left, right, AUDIO_GAIN);
-                Processor.ProcessSamples(floatBuffer);
-            }
+            public IntPtr context_reset;
+            public IntPtr context_destroy;
+
+            public IntPtr retro_run;
         }
 
-        internal unsafe uint SampleBatchCallback(short* data, uint frames)
-        {
-            if (Processor != null)
-            {
-                float[] floatBuffer = Utilities.AudioConversion.ConvertShortToFloat(data, frames * 2, AUDIO_GAIN);
-                Processor.ProcessSamples(floatBuffer);
-                return frames;
-            }
-            return 0;
-        }
+        [DllImport("LibretroUnityPlugin", CallingConvention = CallingConvention.StdCall)]
+        public static extern void SetupInteropInterface(ref InteropInterface interopInterface);
+
+        [DllImport("LibretroUnityPlugin", CallingConvention = CallingConvention.StdCall)]
+        public static extern void SendTexture(IntPtr texture, int width, int height);
+
+        [DllImport("LibretroUnityPlugin", CallingConvention = CallingConvention.StdCall)]
+        public static extern uint GetCurrentFramebuffer();
+
+        [DllImport("LibretroUnityPlugin", CallingConvention = CallingConvention.StdCall, CharSet = CharSet.Ansi)]
+        public static extern IntPtr GetHwProcAddress([MarshalAs(UnmanagedType.LPStr)] string sym);
+
+        [DllImport("LibretroUnityPlugin", CallingConvention = CallingConvention.StdCall)]
+        public static extern IntPtr GetRenderEventFunc();
     }
 }

@@ -22,17 +22,44 @@
 
 using SK.Libretro.Utilities;
 using System;
-using System.Collections.Generic;
 using System.IO;
 using System.Linq;
-using System.Runtime.ExceptionServices;
 using System.Runtime.InteropServices;
-using System.Security;
+using static SK.Libretro.LibretroDelegates;
+using static SK.Libretro.LibretroEnums;
+using static SK.Libretro.LibretroStructs;
 
 namespace SK.Libretro
 {
-    public partial class Wrapper
+    public sealed class LibretroWrapper
     {
+        public enum Language
+        {
+            English             = 0,
+            Japanese            = 1,
+            French              = 2,
+            Spanish             = 3,
+            German              = 4,
+            Italian             = 5,
+            Dutch               = 6,
+            Portuguese_brazil   = 7,
+            Portuguese_portugal = 8,
+            Russian             = 9,
+            Korean              = 10,
+            Chinese_traditional = 11,
+            Chinese_simplified  = 12,
+            Esperanto           = 13,
+            Polish              = 14,
+            Vietnamese          = 15,
+            Arabic              = 16,
+            Greek               = 17,
+            Turkish             = 18,
+            Slovak              = 19,
+            Persian             = 20,
+            Hebrew              = 21,
+            Asturian            = 22
+        }
+
         public bool OptionCropOverscan
         {
             get => _optionCropOverscan;
@@ -40,73 +67,144 @@ namespace SK.Libretro
             {
                 if (_optionCropOverscan != value)
                 {
-                    _optionCropOverscan = value;
-                    _dirtyVariables = true;
+                    _optionCropOverscan         = value;
+                    Environment.UpdateVariables = true;
                 }
             }
         }
 
-        public bool ForceQuit { get; private set; } = false;
+        public string OptionUserName
+        {
+            get => _optionUserName;
+            set
+            {
+                if (!_optionUserName.Equals(value, StringComparison.Ordinal))
+                {
+                    _optionUserName             = value;
+                    Environment.UpdateVariables = true;
+                }
+            }
+        }
 
-        public IGraphicsProcessor GraphicsProcessor { get; private set; }
-        public IAudioProcessor AudioProcessor { get; private set; }
-        public IInputProcessor InputProcessor { get; private set; }
+        public Language OptionLanguage
+        {
+            get => _optionLanguage;
+            set
+            {
+                if (_optionLanguage != value)
+                {
+                    _optionLanguage             = value;
+                    Environment.UpdateVariables = true;
+                }
+            }
+        }
 
-        public readonly TargetPlatform TargetPlatform;
+        public readonly LibretroVideo Video;
+        public readonly LibretroAudio Audio;
+        public readonly LibretroInput Input;
 
-        public static string WrapperDirectory;
-        public static string CoresDirectory;
-        public static string SystemDirectory;
-        public static string CoreAssetsDirectory;
-        public static string SavesDirectory;
-        public static string TempDirectory;
-        public static string CoreOptionsFile;
+        public readonly LibretroCore Core;
+        public readonly LibretroGame Game;
 
-        public LibretroCore Core { get; private set; } = new LibretroCore();
-        public LibretroGame Game { get; private set; } = new LibretroGame();
+        internal static readonly retro_log_level LogLevel = retro_log_level.RETRO_LOG_WARN;
 
-        private readonly List<IntPtr> _unsafeStrings = new List<IntPtr>();
+        internal static string MainDirectory;
+        internal static string CoresDirectory;
+        internal static string SystemDirectory;
+        internal static string CoreAssetsDirectory;
+        internal static string SavesDirectory;
+        internal static string TempDirectory;
+        internal static string CoreOptionsFile;
 
-        private CoreOptionsList _coreOptionsList;
+        internal static LibretroCoreOptionsList CoreOptionsList;
+
+        internal readonly LibretroTargetPlatform TargetPlatform;
+
+        internal readonly LibretroEnvironment Environment;
+
+        private string _optionUserName   = "LibretroUnityFE's Awesome User";
+        private Language _optionLanguage = Language.English;
         private bool _optionCropOverscan = true;
-        private bool _dirtyVariables     = true;
-        private bool _glSupport;
 
-        public Wrapper(TargetPlatform targetPlatform, string baseDirectory = null)
+        #region GC pinned delegates
+        internal readonly retro_environment_t EnvironmentCallback;
+        internal readonly retro_video_refresh_t VideoRefreshCallback;
+        internal readonly retro_audio_sample_t AudioSampleCallback;
+        internal readonly retro_audio_sample_batch_t AudioSampleBatchCallback;
+        internal readonly retro_input_poll_t InputPollCallback;
+        internal readonly retro_input_state_t InputStateCallback;
+        internal readonly retro_log_printf_t LogPrintfCallback;
+        #endregion
+
+        internal retro_frame_time_callback FrameTimeInterface;
+        internal retro_frame_time_callback_t FrameTimeInterfaceCallback = null;
+
+        public retro_hw_render_callback HwRenderInterface;
+
+        private long _frameTimeLast = 0;
+
+        private LibretroPlugin.InteropInterface _interopInterface;
+
+        public unsafe LibretroWrapper(LibretroTargetPlatform targetPlatform, string baseDirectory = null)
         {
             TargetPlatform = targetPlatform;
 
-            if (WrapperDirectory == null)
+            if (MainDirectory == null)
             {
-                WrapperDirectory    = !string.IsNullOrEmpty(baseDirectory) ? baseDirectory : "libretro~";
-                CoresDirectory      = $"{WrapperDirectory}/cores";
-                SystemDirectory     = $"{WrapperDirectory}/system";
-                CoreAssetsDirectory = $"{WrapperDirectory}/core_assets";
-                SavesDirectory      = $"{WrapperDirectory}/saves";
-                TempDirectory       = $"{WrapperDirectory}/temp";
-                CoreOptionsFile     = $"{WrapperDirectory}/core_options.json";
+                MainDirectory       = !string.IsNullOrEmpty(baseDirectory) ? baseDirectory : "libretro~";
+                CoresDirectory      = $"{MainDirectory}/cores";
+                SystemDirectory     = $"{MainDirectory}/system";
+                CoreAssetsDirectory = $"{MainDirectory}/core_assets";
+                SavesDirectory      = $"{MainDirectory}/saves";
+                TempDirectory       = $"{MainDirectory}/temp";
+                CoreOptionsFile     = $"{MainDirectory}/core_options.json";
+
+                string dir = FileSystem.GetAbsolutePath(MainDirectory);
+                if (!Directory.Exists(dir))
+                {
+                    _ = Directory.CreateDirectory(dir);
+                }
+
+                dir = FileSystem.GetAbsolutePath(CoresDirectory);
+                if (!Directory.Exists(dir))
+                {
+                    _ = Directory.CreateDirectory(dir);
+                }
+
+                dir = Path.GetFullPath(TempDirectory);
+                if (Directory.Exists(dir))
+                {
+                    string[] fileNames = Directory.GetFiles(dir, "*.*", SearchOption.AllDirectories);
+                    foreach (string fileName in fileNames)
+                    {
+                        _ = FileSystem.DeleteFile(fileName);
+                    }
+                }
             }
 
-            string wrapperDirectory = FileSystem.GetAbsolutePath(WrapperDirectory);
-            if (!Directory.Exists(wrapperDirectory))
-            {
-                _ = Directory.CreateDirectory(wrapperDirectory);
-            }
+            Core = new LibretroCore(this);
+            Game = new LibretroGame();
 
-            string tempDirectory = FileSystem.GetAbsolutePath(TempDirectory);
-            if (Directory.Exists(tempDirectory))
-            {
-                Directory.Delete(tempDirectory, true);
-            }
+            Environment = new LibretroEnvironment(this);
+            Video       = new LibretroVideo(Core, Game);
+            Audio       = new LibretroAudio();
+            Input       = new LibretroInput();
 
-            // InitGL();
+            EnvironmentCallback       = Environment.Callback;
+            VideoRefreshCallback      = Video.Callback;
+            AudioSampleCallback       = Audio.SampleCallback;
+            AudioSampleBatchCallback  = Audio.SampleBatchCallback;
+            InputPollCallback         = Input.PollCallback;
+            InputStateCallback        = Input.StateCallback;
+
+            LogPrintfCallback = LibretroLog.RetroLogPrintf;
         }
 
         public bool StartGame(string coreName, string gameDirectory, string gameName)
         {
             LoadCoreOptionsFile();
 
-            if (!Core.Start(this, coreName))
+            if (!Core.Start(coreName))
             {
                 return false;
             }
@@ -116,243 +214,99 @@ namespace SK.Libretro
                 return false;
             }
 
+            if (Core.HwAccelerated)
+            {
+                _interopInterface = new LibretroPlugin.InteropInterface
+                {
+                    context_reset = HwRenderInterface.context_reset,
+                    context_destroy = HwRenderInterface.context_destroy,
+                    retro_run = Marshal.GetFunctionPointerForDelegate(Core.retro_run)
+                };
+                LibretroPlugin.SetupInteropInterface(ref _interopInterface);
+            }
+
             return true;
         }
 
         public void StopGame()
         {
-            AudioProcessor?.DeInit();
+            Audio.Processor?.DeInit();
 
             Game.Stop();
             Core.Stop();
+        }
 
-            glfwDestroyWindow(_windowHandle);
-            glfwTerminate();
-
-            for (int i = 0; i < _unsafeStrings.Count; ++i)
+        public void FrameTimeUpdate()
+        {
+            if (FrameTimeInterface.callback != IntPtr.Zero)
             {
-                Marshal.FreeHGlobal(_unsafeStrings[i]);
+                long current = System.Diagnostics.Stopwatch.GetTimestamp();
+                long delta   = current - _frameTimeLast;
+
+                if (_frameTimeLast <= 0)
+                {
+                    delta = FrameTimeInterface.reference;
+                }
+                _frameTimeLast = current;
+                FrameTimeInterfaceCallback(delta * 1000);
             }
         }
 
-        [HandleProcessCorruptedStateExceptions, SecurityCritical]
         public void Update()
         {
-            if (ForceQuit || !Game.Running || !Core.Initialized)
+            if (!Game.Running || !Core.Initialized)
             {
                 return;
             }
 
-            // FIXME(Tom):
-            // An AccessViolationException get thrown by the core when files (roms, bios, etc...) are missing and probably for other various reasons...
-            // In a normal C# project, this get captured here (when using the attributes) and errors can be displayed properly.
-            // Unity simply crashes here but we only know about the missing things after a call to retro_run...
-            try
+            if (!Core.HwAccelerated)
             {
                 Core.retro_run();
             }
-            catch (AccessViolationException e)
-            {
-                Log.Exception(e);
-            }
-            catch (Exception e)
-            {
-                Log.Exception(e);
-            }
         }
 
-        public void ActivateGraphics(IGraphicsProcessor graphicsProcessor) => GraphicsProcessor = graphicsProcessor;
+        public void ActivateGraphics(IGraphicsProcessor graphicsProcessor) => Video.Processor = graphicsProcessor;
 
-        public void DeactivateGraphics() => GraphicsProcessor = null;
+        public void DeactivateGraphics() => Video.Processor = null;
 
         public void ActivateAudio(IAudioProcessor audioProcessor)
         {
-            AudioProcessor = audioProcessor;
-            AudioProcessor?.Init((int)Game.SystemAVInfo.timing.sample_rate);
+            Audio.Processor = audioProcessor;
+            Audio.Processor?.Init((int)Game.SystemAVInfo.timing.sample_rate);
         }
 
         public void DeactivateAudio()
         {
-            AudioProcessor?.DeInit();
-            AudioProcessor = null;
+            Audio.Processor?.DeInit();
+            Audio.Processor = null;
         }
 
-        public void ActivateInput(IInputProcessor inputProcessor) => InputProcessor = inputProcessor;
+        public void ActivateInput(IInputProcessor inputProcessor) => Input.Processor = inputProcessor;
 
-        public void DeactivateInput() => InputProcessor = null;
+        public void DeactivateInput() => Input.Processor = null;
 
-        private void LoadCoreOptionsFile()
+        internal static void LoadCoreOptionsFile()
         {
-            _coreOptionsList = FileSystem.DeserializeFromJson<CoreOptionsList>(CoreOptionsFile);
-            if (_coreOptionsList == null)
+            CoreOptionsList = FileSystem.DeserializeFromJson<LibretroCoreOptionsList>(CoreOptionsFile);
+            if (CoreOptionsList == null)
             {
-                _coreOptionsList = new CoreOptionsList();
+                CoreOptionsList = new LibretroCoreOptionsList();
             }
         }
 
-        private void SaveCoreOptionsFile()
+        internal static void SaveCoreOptionsFile()
         {
-            if (_coreOptionsList == null || _coreOptionsList.Cores.Count == 0)
+            if (CoreOptionsList == null || CoreOptionsList.Cores.Count == 0)
             {
                 return;
             }
 
-            _coreOptionsList.Cores = _coreOptionsList.Cores.OrderBy(x => x.CoreName).ToList();
-            for (int i = 0; i < _coreOptionsList.Cores.Count; ++i)
+            CoreOptionsList.Cores = CoreOptionsList.Cores.OrderBy(x => x.CoreName).ToList();
+            for (int i = 0; i < CoreOptionsList.Cores.Count; ++i)
             {
-                _coreOptionsList.Cores[i].Options.Sort();
+                CoreOptionsList.Cores[i].Options.Sort();
             }
-            _ = FileSystem.SerializeToJson(_coreOptionsList, CoreOptionsFile);
-        }
-
-        // GLFW
-        [DllImport("glfw3")] static extern IntPtr glfwGetProcAddress(string procname);
-        [DllImport("glfw3")] static extern bool glfwInit();
-        [DllImport("glfw3")] static extern void glfwTerminate();
-        [DllImport("glfw3")] static extern IntPtr glfwCreateWindow(int width, int height, string title, IntPtr monitor, IntPtr share);
-        [DllImport("glfw3")] static extern void glfwDestroyWindow(IntPtr window);
-        [DllImport("glfw3")] static extern void glfwMakeContextCurrent(IntPtr window);
-        [DllImport("glfw3")] static extern bool glfwWindowShouldClose(IntPtr window);
-        [DllImport("glfw3")] static extern void glfwPollEvents();
-        [DllImport("glfw3")] static extern void glfwSwapBuffers(IntPtr window);
-
-        //TODO(Tom): Make this work and move code to somewhere else when (if ever...) working
-
-        // GL
-        const uint GL_FRAMEBUFFER                               = 0x8D40;
-        const uint GL_TEXTURE_2D                                = 0x0DE1;
-        const uint GL_RGBA8                                     = 0x8058;
-        const uint GL_COLOR_ATTACHMENT0                         = 0x8CE0;
-        const uint GL_RENDERBUFFER                              = 0x8D41;
-        const uint GL_DEPTH_COMPONENT16                         = 0x81A5;
-        const uint GL_DEPTH_ATTACHMENT                          = 0x8D00;
-        const uint GL_FRAMEBUFFER_COMPLETE                      = 0x8CD5;
-        const uint GL_FRAMEBUFFER_UNDEFINED                     = 0x8219;
-        const uint GL_FRAMEBUFFER_INCOMPLETE_ATTACHMENT         = 0x8CD6;
-        const uint GL_FRAMEBUFFER_INCOMPLETE_MISSING_ATTACHMENT = 0x8CD7;
-        const uint GL_FRAMEBUFFER_INCOMPLETE_DRAW_BUFFER        = 0x8CDB;
-        const uint GL_FRAMEBUFFER_INCOMPLETE_READ_BUFFER        = 0x8CDC;
-        const uint GL_FRAMEBUFFER_UNSUPPORTED                   = 0x8CDD;
-        const uint GL_FRAMEBUFFER_INCOMPLETE_MULTISAMPLE        = 0x8D56;
-        const uint GL_FRAMEBUFFER_INCOMPLETE_LAYER_TARGETS      = 0x8DA8;
-        const uint GL_COLOR_BUFFER_BIT                          = 0x00004000;
-        const uint GL_DEPTH_BUFFER_BIT                          = 0x00000100;
-
-        unsafe delegate void glGenFramebuffers_f(int n, uint* ids);
-        delegate void glBindFramebuffer_f(uint target, uint framebuffer);
-        unsafe delegate void glGenTextures_f(uint n, uint* textures);
-        delegate void glBindTexture_f(uint target, uint texture);
-        delegate void glTexStorage2D_f(uint target, int levels, uint internalformat, int width, int height);
-        delegate void glFramebufferTexture2D_f(uint target, uint attachment, uint textarget, uint texture, int level);
-        unsafe delegate void glGenRenderbuffers_f(int n, uint* renderbuffers);
-        delegate void glBindRenderbuffer_f(uint target, uint renderbuffer);
-        delegate void glRenderbufferStorage_f(uint target, uint internalformat, int width, int height);
-        delegate void glFramebufferRenderbuffer_f(uint target, uint attachment, uint renderbuffertarget, uint renderbuffer);
-        delegate uint glCheckFramebufferStatus_f(uint target);
-        delegate void glClear_f(uint flags);
-
-        glGenFramebuffers_f glGenFramebuffers;
-        glBindFramebuffer_f glBindFramebuffer;
-        glGenTextures_f glGenTextures;
-        glBindTexture_f glBindTexture;
-        glTexStorage2D_f glTexStorage2D;
-        glFramebufferTexture2D_f glFramebufferTexture2D;
-        glGenRenderbuffers_f glGenRenderbuffers;
-        glBindRenderbuffer_f glBindRenderbuffer;
-        glRenderbufferStorage_f glRenderbufferStorage;
-        glFramebufferRenderbuffer_f glFramebufferRenderbuffer;
-        glCheckFramebufferStatus_f glCheckFramebufferStatus;
-        glClear_f glClear;
-
-        // My stuff...
-        IntPtr GetProcAddress(string procname) => glfwGetProcAddress(procname);
-        IntPtr _windowHandle;
-        retro_hw_render_callback _hwRenderCallback;
-        readonly uint[] _framebuffers = new uint[32];
-        readonly uint[] _renderbuffers = new uint[32];
-        readonly uint[] _textures = new uint[32];
-
-        retro_hw_get_current_framebuffer_t _videoDriverGetCurrentFrameBufferCallback;
-        retro_hw_get_proc_address_t _videoDriverGetProcAddressCallback;
-
-        uint VideoDriverGetCurrentFrameBuffer() => _framebuffers[0];
-
-        private unsafe void InitGL()
-        {
-            if (!glfwInit())
-            {
-                _glSupport = false;
-                return;
-            }
-
-            _windowHandle = glfwCreateWindow(640, 480, "Testing", IntPtr.Zero, IntPtr.Zero);
-            if (_windowHandle == IntPtr.Zero)
-            {
-                _glSupport = false;
-                glfwTerminate();
-                return;
-            }
-
-            glfwMakeContextCurrent(_windowHandle);
-
-            glGenFramebuffers         = Marshal.GetDelegateForFunctionPointer<glGenFramebuffers_f>(glfwGetProcAddress("glGenFramebuffers"));
-            glBindFramebuffer         = Marshal.GetDelegateForFunctionPointer<glBindFramebuffer_f>(glfwGetProcAddress("glBindFramebuffer"));
-            glGenTextures             = Marshal.GetDelegateForFunctionPointer<glGenTextures_f>(glfwGetProcAddress("glGenTextures"));
-            glBindTexture             = Marshal.GetDelegateForFunctionPointer<glBindTexture_f>(glfwGetProcAddress("glBindTexture"));
-            glTexStorage2D            = Marshal.GetDelegateForFunctionPointer<glTexStorage2D_f>(glfwGetProcAddress("glTexStorage2D"));
-            glFramebufferTexture2D    = Marshal.GetDelegateForFunctionPointer<glFramebufferTexture2D_f>(glfwGetProcAddress("glFramebufferTexture2D"));
-            glGenRenderbuffers        = Marshal.GetDelegateForFunctionPointer<glGenRenderbuffers_f>(glfwGetProcAddress("glGenRenderbuffers"));
-            glBindRenderbuffer        = Marshal.GetDelegateForFunctionPointer<glBindRenderbuffer_f>(glfwGetProcAddress("glBindRenderbuffer"));
-            glRenderbufferStorage     = Marshal.GetDelegateForFunctionPointer<glRenderbufferStorage_f>(glfwGetProcAddress("glRenderbufferStorage"));
-            glFramebufferRenderbuffer = Marshal.GetDelegateForFunctionPointer<glFramebufferRenderbuffer_f>(glfwGetProcAddress("glFramebufferRenderbuffer"));
-            glCheckFramebufferStatus  = Marshal.GetDelegateForFunctionPointer<glCheckFramebufferStatus_f>(glfwGetProcAddress("glCheckFramebufferStatus"));
-            glClear = Marshal.GetDelegateForFunctionPointer<glClear_f>(glfwGetProcAddress("glClear"));
-
-            fixed (uint* ptr = _framebuffers)
-            {
-                glGenFramebuffers(1, ptr);
-            }
-
-            glBindFramebuffer(GL_FRAMEBUFFER, _framebuffers[0]);
-
-            fixed (uint* ptr = _textures)
-            {
-                glGenTextures(1, ptr);
-            }
-
-            glBindTexture(GL_TEXTURE_2D, _textures[0]);
-            glTexStorage2D(GL_TEXTURE_2D, 1, GL_RGBA8, 640, 480);
-            glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, _textures[0], 0);
-
-            fixed (uint* ptr = _renderbuffers)
-            {
-                glGenRenderbuffers(1, ptr);
-            }
-
-            glBindRenderbuffer(GL_RENDERBUFFER, _renderbuffers[0]);
-            glRenderbufferStorage(GL_RENDERBUFFER, GL_DEPTH_COMPONENT16, 640, 480);
-            glBindRenderbuffer(GL_RENDERBUFFER, 0);
-            glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, GL_RENDERBUFFER, _renderbuffers[0]);
-
-            uint status = glCheckFramebufferStatus(GL_FRAMEBUFFER);
-            if (status != GL_FRAMEBUFFER_COMPLETE)
-            {
-                _glSupport = false;
-                _windowHandle = IntPtr.Zero;
-                glfwDestroyWindow(_windowHandle);
-                glfwTerminate();
-                return;
-            }
-
-            glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
-
-            glBindTexture(GL_TEXTURE_2D, 0);
-            glBindFramebuffer(GL_FRAMEBUFFER, 0);
-
-            _videoDriverGetCurrentFrameBufferCallback = VideoDriverGetCurrentFrameBuffer;
-            _videoDriverGetProcAddressCallback = glfwGetProcAddress;
-
-            _glSupport = true;
+            _ = FileSystem.SerializeToJson(CoreOptionsList, CoreOptionsFile);
         }
     }
 }

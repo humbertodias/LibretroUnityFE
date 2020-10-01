@@ -55,11 +55,6 @@ namespace SK.Examples.Player
         private void Update()
         {
             _stateController.Update(Time.deltaTime);
-
-            if (Keyboard.current.escapeKey.wasPressedThisFrame)
-            {
-                Utils.ExitApp();
-            }
         }
 
         private void OnGUI()
@@ -74,7 +69,7 @@ namespace SK.Examples.Player
 
             float labelWidth = 100f;
             float fieldWidth = 100f;
-            float height = 20f;
+            float height     = 20f;
 
             // Show options
             GUILayout.BeginHorizontal();
